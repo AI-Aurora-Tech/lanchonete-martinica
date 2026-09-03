@@ -16,10 +16,14 @@ navegador.
 **https://ai-aurora-tech.github.io/lanchonete-martinica/**
 
 O app é publicado no GitHub Pages a cada push na `main`, pelo workflow
-`.github/workflows/deploy.yml` (typecheck → build → deploy). O próprio workflow
-habilita o Pages na primeira execução; se a organização bloquear isso, ligue à
-mão em **Settings → Pages → Source: GitHub Actions** e rode o workflow de novo
-em *Actions → Publicar no GitHub Pages → Run workflow*.
+`.github/workflows/deploy.yml` (typecheck → build → deploy).
+
+**Antes da primeira publicação**, um administrador do repositório precisa ligar
+o Pages uma única vez em **Settings → Pages → Source: GitHub Actions**. Não dá
+para automatizar esse passo: criar o site do Pages é operação de administrador e
+o `GITHUB_TOKEN` do workflow não tem esse direito. Feito isso, rode o workflow
+em *Actions → Publicar no GitHub Pages → Run workflow* — daí em diante cada push
+na `main` publica sozinho.
 
 ## 🚀 Rodando localmente
 
