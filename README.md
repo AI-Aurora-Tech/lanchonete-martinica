@@ -11,7 +11,16 @@ navegador.
 > Projeto de demonstração. A lanchonete, os produtos e os fornecedores são
 > fictícios.
 
-## 🚀 Rodando
+## 🌐 Onde acessar
+
+**https://ai-aurora-tech.github.io/lanchonete-martinica/**
+
+O app é publicado no GitHub Pages a cada push na `main`, pelo workflow
+`.github/workflows/deploy.yml` (typecheck → build → deploy). Para a primeira
+publicação funcionar, é preciso habilitar uma vez em
+**Settings → Pages → Source: GitHub Actions**.
+
+## 🚀 Rodando localmente
 
 ```bash
 npm install

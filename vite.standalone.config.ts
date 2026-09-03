@@ -7,6 +7,7 @@ import { viteSingleFile } from 'vite-plugin-singlefile'
 // balcão num computador sem infraestrutura.
 // Uso: npm run build:standalone  ->  dist-standalone/index.html
 export default defineConfig({
+  base: './',
   plugins: [react(), viteSingleFile()],
   build: {
     outDir: 'dist-standalone',
