@@ -13,17 +13,12 @@ navegador.
 
 ## 🌐 Onde acessar
 
-**https://ai-aurora-tech.github.io/lanchonete-martinica/**
+A aplicação é publicada na **Vercel**: cada push na `main` atualiza a produção e
+cada pull request ganha uma URL de preview própria.
 
-O app é publicado no GitHub Pages a cada push na `main`, pelo workflow
-`.github/workflows/deploy.yml` (typecheck → build → deploy).
-
-**Antes da primeira publicação**, um administrador do repositório precisa ligar
-o Pages uma única vez em **Settings → Pages → Source: GitHub Actions**. Não dá
-para automatizar esse passo: criar o site do Pages é operação de administrador e
-o `GITHUB_TOKEN` do workflow não tem esse direito. Feito isso, rode o workflow
-em *Actions → Publicar no GitHub Pages → Run workflow* — daí em diante cada push
-na `main` publica sozinho.
+Não há nada a configurar no repositório — a Vercel detecta o Vite sozinho
+(`npm run build` → `dist/`) e o app vive na raiz do domínio. O `base: './'` do
+Vite deixa o mesmo build funcionar tanto na raiz quanto num subcaminho.
 
 ## 🚀 Rodando localmente
 
