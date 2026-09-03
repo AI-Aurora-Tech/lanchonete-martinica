@@ -16,9 +16,10 @@ navegador.
 **https://ai-aurora-tech.github.io/lanchonete-martinica/**
 
 O app é publicado no GitHub Pages a cada push na `main`, pelo workflow
-`.github/workflows/deploy.yml` (typecheck → build → deploy). Para a primeira
-publicação funcionar, é preciso habilitar uma vez em
-**Settings → Pages → Source: GitHub Actions**.
+`.github/workflows/deploy.yml` (typecheck → build → deploy). O próprio workflow
+habilita o Pages na primeira execução; se a organização bloquear isso, ligue à
+mão em **Settings → Pages → Source: GitHub Actions** e rode o workflow de novo
+em *Actions → Publicar no GitHub Pages → Run workflow*.
 
 ## 🚀 Rodando localmente
 

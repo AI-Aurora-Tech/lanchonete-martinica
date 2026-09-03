@@ -1,6 +1,8 @@
 # Publica o app no GitHub Pages a cada push na main.
 #
-# Pré-requisito (uma vez): Settings → Pages → Source: "GitHub Actions".
+# O próprio workflow habilita o Pages na primeira execução (configure-pages
+# com enablement: true). Se a organização bloquear isso, ligue à mão em
+# Settings → Pages → Source: "GitHub Actions" e rode o workflow de novo.
 name: Publicar no GitHub Pages
 
 on:
@@ -34,7 +36,11 @@ jobs:
       - run: npm run lint
       - run: npm run build
 
+      # enablement liga o Pages na primeira execução, sem passar pelas
+      # configurações do repositório.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
