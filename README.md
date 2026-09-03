@@ -13,6 +13,8 @@ navegador.
 
 ## 🌐 Onde acessar
 
+**https://lanchonete-martinica.vercel.app**
+
 A aplicação é publicada na **Vercel**: cada push na `main` atualiza a produção e
 cada pull request ganha uma URL de preview própria.
 
