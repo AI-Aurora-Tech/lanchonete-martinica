@@ -8,9 +8,49 @@ import {
   FOOD_KIND_LABEL,
   type FoodKind,
   type Product,
+  type Ingredient,
   type ProductCategory,
   type RecipeItem,
 } from '../types'
+
+/**
+ * Linha da ficha técnica enquanto é editada. A quantidade fica como texto
+ * (para aceitar "0," e "0,18" durante a digitação) e, nos insumos a peso ou
+ * volume, pode ser informada em g/ml (`small`) — o estoque segue em kg/L.
+ */
+interface RecipeLine {
+  ingredientId: string
+  text: string
+  small: boolean
+}
+
+/** Rótulos da unidade de digitação: [unidade do estoque, unidade menor]. */
+const UNIT_INPUT: Record<Ingredient['unit'], [string, string | null]> = {
+  kg: ['kg', 'g'],
+  l: ['L', 'ml'],
+  un: ['un', null],
+}
+
+function numberText(n: number): string {
+  return String(Number(n.toFixed(3))).replace('.', ',')
+}
+
+function toLine(item: RecipeItem, ingredients: Ingredient[]): RecipeLine {
+  const ing = ingredients.find((i) => i.id === item.ingredientId)
+  const small = !!ing && ing.unit !== 'un' && item.qty > 0 && item.qty < 1
+  return {
+    ingredientId: item.ingredientId,
+    text: item.qty > 0 ? numberText(small ? item.qty * 1000 : item.qty) : '',
+    small,
+  }
+}
+
+/** Quantidade na unidade base do insumo (kg, L ou un). */
+function lineQty(line: RecipeLine, ingredients: Ingredient[]): number {
+  const value = parseNumber(line.text)
+  const ing = ingredients.find((i) => i.id === line.ingredientId)
+  return line.small && ing && ing.unit !== 'un' ? value / 1000 : value
+}
 
 function blankProduct(): Product {
   return {
@@ -98,7 +138,7 @@ export function ProductsScreen() {
                         type="button"
                         className="lm-btn lm-btn--danger lm-btn--sm"
                         onClick={() => {
-                          if (confirm(`Excluir o produto "${p.name}"?`)) removeProduct(p.id)
+                          if (confirm(`Excluir o produto "${p.name}"?`)) void removeProduct(p.id)
                         }}
                       >
                         Excluir
@@ -116,9 +156,8 @@ export function ProductsScreen() {
         <ProductDialog
           product={editing}
           onCancel={() => setEditing(null)}
-          onSave={(p) => {
-            saveProduct(p)
-            setEditing(null)
+          onSave={async (p) => {
+            if (await saveProduct(p)) setEditing(null)
           }}
         />
       )}
@@ -141,16 +180,23 @@ function ProductDialog({
     product.price > 0 ? product.price.toFixed(2).replace('.', ',') : '',
   )
   const [error, setError] = useState('')
+  const [lines, setLines] = useState<RecipeLine[]>(() =>
+    product.recipe.map((r) => toLine(r, ingredients)),
+  )
 
   function patch(p: Partial<Product>) {
     setDraft((prev) => ({ ...prev, ...p }))
   }
 
-  function setRecipe(recipe: RecipeItem[]) {
-    patch({ recipe })
+  function updateLine(index: number, change: Partial<RecipeLine>) {
+    setLines((prev) => prev.map((l, j) => (j === index ? { ...l, ...change } : l)))
   }
 
-  const cost = productCost({ ...draft, price: parseNumber(price) }, ingredients)
+  const recipe: RecipeItem[] = lines.map((l) => ({
+    ingredientId: l.ingredientId,
+    qty: lineQty(l, ingredients),
+  }))
+  const cost = productCost({ ...draft, recipe }, ingredients)
 
   return (
     <div className="lm-modal" role="dialog" aria-modal="true" aria-label="Produto">
@@ -244,26 +290,29 @@ function ProductDialog({
             <h3>Ficha técnica</h3>
             <span>Quanto de cada insumo sai do estoque a cada porção vendida</span>
           </header>
-          {draft.recipe.length === 0 && (
+          {lines.length === 0 && (
             <p className="lm-empty">
               Sem ficha técnica: o item não baixa estoque e aparece como “sob demanda”.
             </p>
           )}
           <ul>
-            {draft.recipe.map((line, i) => {
+            {lines.map((line, i) => {
               const ing = ingredients.find((x) => x.id === line.ingredientId)
+              const [bigUnit, smallUnit] = ing ? UNIT_INPUT[ing.unit] : ['—', null]
+              const qtyBase = recipe[i].qty
               return (
                 <li key={i}>
                   <select
                     className="lm-input"
                     value={line.ingredientId}
-                    onChange={(e) =>
-                      setRecipe(
-                        draft.recipe.map((r, j) =>
-                          j === i ? { ...r, ingredientId: e.target.value } : r,
-                        ),
-                      )
-                    }
+                    onChange={(e) => {
+                      const next = ingredients.find((x) => x.id === e.target.value)
+                      updateLine(i, {
+                        ingredientId: e.target.value,
+                        // Insumo por unidade não tem g/ml.
+                        small: next?.unit === 'un' ? false : line.small,
+                      })
+                    }}
                     aria-label="Insumo"
                   >
                     <option value="">Selecione…</option>
@@ -276,24 +325,45 @@ function ProductDialog({
                   <input
                     className="lm-input lm-input--small"
                     inputMode="decimal"
-                    value={String(line.qty)}
-                    onChange={(e) =>
-                      setRecipe(
-                        draft.recipe.map((r, j) =>
-                          j === i ? { ...r, qty: parseNumber(e.target.value) } : r,
-                        ),
-                      )
-                    }
+                    value={line.text}
+                    placeholder={line.small ? 'ex.: 180' : 'ex.: 0,18'}
+                    onChange={(e) => updateLine(i, { text: e.target.value })}
                     aria-label="Quantidade por porção"
                   />
-                  <span className="lm-recipe__unit">{ing?.unit ?? '—'}</span>
+                  {smallUnit ? (
+                    <select
+                      className="lm-input lm-input--small"
+                      value={line.small ? 'small' : 'big'}
+                      onChange={(e) => {
+                        const small = e.target.value === 'small'
+                        if (small === line.small) return
+                        // Mantém a mesma quantidade ao trocar de unidade.
+                        const value = parseNumber(line.text)
+                        updateLine(i, {
+                          small,
+                          text: line.text === '' ? '' : numberText(small ? value * 1000 : value / 1000),
+                        })
+                      }}
+                      aria-label="Unidade da quantidade"
+                    >
+                      <option value="small">{smallUnit}</option>
+                      <option value="big">{bigUnit}</option>
+                    </select>
+                  ) : (
+                    <span className="lm-recipe__unit">{bigUnit}</span>
+                  )}
                   <span className="lm-recipe__cost">
-                    {ing ? money(ing.avgCost * line.qty) : money(0)}
+                    {ing ? money(ing.avgCost * qtyBase) : money(0)}
+                    {ing && line.small && qtyBase > 0 && (
+                      <em className="lm-recipe__base">
+                        = {fmtQty(qtyBase)} {bigUnit}
+                      </em>
+                    )}
                   </span>
                   <button
                     type="button"
                     className="lm-btn lm-btn--ghost lm-btn--sm"
-                    onClick={() => setRecipe(draft.recipe.filter((_, j) => j !== i))}
+                    onClick={() => setLines(lines.filter((_, j) => j !== i))}
                   >
                     Remover
                   </button>
@@ -304,7 +374,7 @@ function ProductDialog({
           <button
             type="button"
             className="lm-btn lm-btn--ghost lm-btn--sm"
-            onClick={() => setRecipe([...draft.recipe, { ingredientId: '', qty: 0 }])}
+            onClick={() => setLines([...lines, { ingredientId: '', text: '', small: true }])}
           >
             + Adicionar insumo
           </button>
@@ -321,9 +391,9 @@ function ProductDialog({
             )}
           </p>
           <p className="lm-note lm-note--muted">
-            Exemplo: uma porção de batata usa <strong>0,5 kg</strong>. Com{' '}
-            <strong>{fmtQty(5)} kg</strong> comprados, o estoque passa a ter{' '}
-            <strong>10 porções</strong> para venda.
+            Exemplo: uma porção de batata usa <strong>500 g</strong> (ou{' '}
+            <strong>0,5 kg</strong>). Com <strong>{fmtQty(5)} kg</strong> comprados, o estoque
+            passa a ter <strong>10 porções</strong> para venda.
           </p>
         </section>
 
@@ -344,11 +414,18 @@ function ProductDialog({
                 setError('Informe um preço de venda maior que zero.')
                 return
               }
+              const invalid = lines.findIndex(
+                (l, i) => l.ingredientId && l.text.trim() !== '' && !(recipe[i].qty > 0),
+              )
+              if (invalid >= 0) {
+                setError(`Quantidade inválida na linha ${invalid + 1} da ficha técnica.`)
+                return
+              }
               onSave({
                 ...draft,
                 name: draft.name.trim(),
                 price: parseNumber(price),
-                recipe: draft.recipe.filter((r) => r.ingredientId && r.qty > 0),
+                recipe: recipe.filter((r) => r.ingredientId && r.qty > 0),
               })
             }}
           >

@@ -111,7 +111,7 @@ export function StockScreen() {
                         className="lm-btn lm-btn--danger lm-btn--sm"
                         onClick={() => {
                           if (confirm(`Excluir o insumo "${i.name}"? Ele sairá das fichas técnicas.`)) {
-                            removeIngredient(i.id)
+                            void removeIngredient(i.id)
                           }
                         }}
                       >
@@ -184,9 +184,8 @@ export function StockScreen() {
         <IngredientDialog
           ingredient={editing}
           onCancel={() => setEditing(null)}
-          onSave={(i) => {
-            saveIngredient(i)
-            setEditing(null)
+          onSave={async (i) => {
+            if (await saveIngredient(i)) setEditing(null)
           }}
         />
       )}

@@ -39,6 +39,7 @@ export function PurchasesScreen() {
   const [installments, setInstallments] = useState('1')
   const [notes, setNotes] = useState('')
   const [error, setError] = useState('')
+  const [sending, setSending] = useState(false)
   const [done, setDone] = useState<{ number: number; total: number; count: number } | null>(null)
 
   const parcels = Math.max(1, Math.floor(parseNumber(installments) || 1))
@@ -75,7 +76,8 @@ export function PurchasesScreen() {
     updateLine(index, { ingredientId, unit })
   }
 
-  function submit() {
+  async function submit() {
+    if (sending) return
     if (resolved.length === 0) {
       setError('Adicione pelo menos um insumo com quantidade maior que zero.')
       return
@@ -88,7 +90,8 @@ export function PurchasesScreen() {
       setError('Informe o custo dos itens comprados.')
       return
     }
-    const { purchase, payables: created } = registerPurchase({
+    setSending(true)
+    const result = await registerPurchase({
       supplier,
       invoice,
       lines: resolved,
@@ -97,6 +100,9 @@ export function PurchasesScreen() {
       installments: parcels,
       notes,
     })
+    setSending(false)
+    if (!result) return
+    const { purchase, payables: created } = result
     setDone({ number: purchase.number, total: purchase.total, count: created.length })
     setSupplier('')
     setInvoice('')
@@ -336,8 +342,13 @@ export function PurchasesScreen() {
           </p>
         )}
 
-        <button type="button" className="lm-btn lm-btn--primary" onClick={submit}>
-          Registrar compra e gerar contas a pagar
+        <button
+          type="button"
+          className="lm-btn lm-btn--primary"
+          onClick={submit}
+          disabled={sending}
+        >
+          {sending ? 'Registrando…' : 'Registrar compra e gerar contas a pagar'}
         </button>
       </section>
 

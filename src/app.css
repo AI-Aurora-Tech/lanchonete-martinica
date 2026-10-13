@@ -77,23 +77,17 @@
   color: var(--lm-ink-3);
 }
 
-.lm-login__hint {
-  display: grid;
-  gap: 0.25rem;
-  margin-top: 0.4rem;
-  padding: 0.85rem;
-  border-radius: 12px;
+.lm-login__box code {
   background: var(--lm-orange-soft);
-  border: 1px dashed rgba(255, 106, 0, 0.45);
-  font-size: 0.82rem;
-  color: var(--lm-ink-3);
-}
-
-.lm-login__hint code {
-  background: var(--lm-white);
   border-radius: 6px;
   padding: 0.05rem 0.35rem;
   font-size: 0.82rem;
+}
+
+.lm-loading {
+  justify-items: center;
+  text-align: center;
+  color: var(--lm-muted);
 }
 
 .lm-logo {
@@ -741,6 +735,26 @@
   font-weight: 600;
 }
 
+.lm-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 1.25rem;
+  z-index: 70;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: min(560px, calc(100vw - 2rem));
+  padding: 0.7rem 0.8rem 0.7rem 1rem;
+  border-radius: 12px;
+  background: #fdecec;
+  border-left: 4px solid var(--lm-bad);
+  box-shadow: var(--lm-shadow);
+  color: #8c1c1c;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
 .lm-success {
   margin: 0;
   padding: 0.6rem 0.8rem;
@@ -1337,7 +1351,7 @@
 
 .lm-recipe li {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 110px 40px 90px auto;
+  grid-template-columns: minmax(0, 1fr) 100px 72px 100px auto;
   gap: 0.4rem;
   align-items: center;
 }
@@ -1349,9 +1363,17 @@
 }
 
 .lm-recipe__cost {
+  display: grid;
   font-size: 0.82rem;
   font-weight: 700;
   text-align: right;
+}
+
+.lm-recipe__base {
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 600;
+  color: var(--lm-muted);
 }
 
 /* --------------------------------------------------------------- Modal --- */

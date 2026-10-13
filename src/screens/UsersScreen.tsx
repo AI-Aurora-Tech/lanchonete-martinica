@@ -1,15 +1,15 @@
 import { useState } from 'react'
-import { uid, useStore } from '../store'
-import { ROLE_LABEL, type Role, type User } from '../types'
+import { useStore, type UserDraft } from '../store'
+import { ROLE_LABEL, type Role } from '../types'
 
-function blankUser(): User {
-  return { id: uid('user'), name: '', username: '', password: '', role: 'pdv', active: true }
+function blankUser(): UserDraft {
+  return { name: '', username: '', password: '', role: 'pdv', active: true }
 }
 
 /** Perfis de acesso: Admin (gestão completa) e PDV (apenas caixa e fila). */
 export function UsersScreen({ currentUserId }: { currentUserId: string }) {
-  const { users, saveUser, removeUser, resetDemo } = useStore()
-  const [editing, setEditing] = useState<User | null>(null)
+  const { users, saveUser, removeUser } = useStore()
+  const [editing, setEditing] = useState<UserDraft | null>(null)
 
   return (
     <div className="lm-stack">
@@ -53,7 +53,7 @@ export function UsersScreen({ currentUserId }: { currentUserId: string }) {
                     <button
                       type="button"
                       className="lm-btn lm-btn--ghost lm-btn--sm"
-                      onClick={() => setEditing({ ...u })}
+                      onClick={() => setEditing({ ...u, password: '' })}
                     >
                       Editar
                     </button>
@@ -62,7 +62,7 @@ export function UsersScreen({ currentUserId }: { currentUserId: string }) {
                       className="lm-btn lm-btn--danger lm-btn--sm"
                       disabled={u.id === currentUserId}
                       onClick={() => {
-                        if (confirm(`Excluir o usuário "${u.name}"?`)) removeUser(u.id)
+                        if (confirm(`Excluir o usuário "${u.name}"?`)) void removeUser(u.id)
                       }}
                     >
                       Excluir
@@ -80,34 +80,13 @@ export function UsersScreen({ currentUserId }: { currentUserId: string }) {
         </p>
       </section>
 
-      <section className="lm-panel">
-        <header className="lm-panel__head">
-          <h2>Dados do sistema</h2>
-        </header>
-        <p className="lm-note lm-note--muted">
-          Os dados ficam salvos neste navegador. Restaurar a demonstração apaga pedidos, compras e
-          contas lançadas e devolve o cadastro inicial.
-        </p>
-        <button
-          type="button"
-          className="lm-btn lm-btn--danger"
-          onClick={() => {
-            if (confirm('Restaurar os dados de demonstração? Todo o histórico será apagado.')) {
-              resetDemo()
-            }
-          }}
-        >
-          Restaurar dados de demonstração
-        </button>
-      </section>
-
       {editing && (
         <UserDialog
           user={editing}
+          isSelf={editing.id === currentUserId}
           onCancel={() => setEditing(null)}
-          onSave={(u) => {
-            saveUser(u)
-            setEditing(null)
+          onSave={async (u) => {
+            if (await saveUser(u)) setEditing(null)
           }}
         />
       )}
@@ -117,20 +96,25 @@ export function UsersScreen({ currentUserId }: { currentUserId: string }) {
 
 function UserDialog({
   user,
+  isSelf,
   onSave,
   onCancel,
 }: {
-  user: User
-  onSave: (u: User) => void
+  user: UserDraft
+  /** O próprio usuário logado: não pode se rebaixar nem se desativar. */
+  isSelf: boolean
+  onSave: (u: UserDraft) => Promise<void>
   onCancel: () => void
 }) {
   const [draft, setDraft] = useState(user)
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const isNew = !user.id
 
   return (
     <div className="lm-modal" role="dialog" aria-modal="true" aria-label="Usuário">
       <div className="lm-modal__box">
-        <h2>{user.name ? 'Editar usuário' : 'Novo usuário'}</h2>
+        <h2>{isNew ? 'Novo usuário' : 'Editar usuário'}</h2>
         <div className="lm-form lm-form--2">
           <label>
             Nome
@@ -150,18 +134,21 @@ function UserDialog({
             />
           </label>
           <label>
-            Senha
+            {isNew ? 'Senha' : 'Nova senha'}
             <input
               className="lm-input"
-              type="text"
+              type="password"
               value={draft.password}
               onChange={(e) => setDraft({ ...draft, password: e.target.value })}
+              placeholder={isNew ? 'Mínimo de 6 caracteres' : 'Deixe em branco para manter'}
+              autoComplete="new-password"
             />
           </label>
           <label>
             Perfil
             <select
               className="lm-input"
+              disabled={isSelf}
               value={draft.role}
               onChange={(e) => setDraft({ ...draft, role: e.target.value as Role })}
             >
@@ -175,6 +162,7 @@ function UserDialog({
           <label className="lm-check lm-span2">
             <input
               type="checkbox"
+              disabled={isSelf}
               checked={draft.active}
               onChange={(e) => setDraft({ ...draft, active: e.target.checked })}
             />
@@ -189,19 +177,28 @@ function UserDialog({
           <button
             type="button"
             className="lm-btn lm-btn--primary"
-            onClick={() => {
-              if (!draft.name.trim() || !draft.username.trim() || !draft.password) {
-                setError('Preencha nome, usuário e senha.')
+            disabled={saving}
+            onClick={async () => {
+              const username = draft.username.trim().toLowerCase()
+              if (!draft.name.trim() || !username || (isNew && !draft.password)) {
+                setError(isNew ? 'Preencha nome, usuário e senha.' : 'Preencha nome e usuário.')
                 return
               }
-              onSave({
-                ...draft,
-                name: draft.name.trim(),
-                username: draft.username.trim().toLowerCase(),
-              })
+              if (!/^[a-z0-9._-]+$/.test(username)) {
+                setError('O usuário aceita só letras minúsculas, números, ponto, hífen e sublinhado.')
+                return
+              }
+              if (draft.password && draft.password.length < 6) {
+                setError('A senha precisa ter pelo menos 6 caracteres.')
+                return
+              }
+              setError('')
+              setSaving(true)
+              await onSave({ ...draft, name: draft.name.trim(), username })
+              setSaving(false)
             }}
           >
-            Salvar
+            {saving ? 'Salvando…' : 'Salvar'}
           </button>
         </div>
       </div>

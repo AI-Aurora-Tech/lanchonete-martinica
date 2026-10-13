@@ -27,15 +27,11 @@ const CATEGORIES: (ProductCategory | 'todos')[] = [
 
 const CASH_SHORTCUTS = [5, 10, 20, 50, 100]
 
-interface Props {
-  operator: string
-}
-
 /**
  * Tela inicial do operador: vitrine com foto e preço de todos os itens de
  * venda, carrinho, forma de pagamento e finalização com impressão opcional.
  */
-export function PdvScreen({ operator }: Props) {
+export function PdvScreen() {
   const { products, ingredients, placeOrder } = useStore()
 
   const [category, setCategory] = useState<ProductCategory | 'todos'>('todos')
@@ -50,6 +46,7 @@ export function PdvScreen({ operator }: Props) {
   const [error, setError] = useState('')
   const [placed, setPlaced] = useState<Order | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [sending, setSending] = useState(false)
 
   const availability = useMemo(() => {
     const map = new Map<string, number | null>()
@@ -146,7 +143,8 @@ export function PdvScreen({ operator }: Props) {
     setError('')
   }
 
-  function finish() {
+  async function finish() {
+    if (sending) return
     if (cart.length === 0) {
       setError('Adicione pelo menos um item ao pedido.')
       return
@@ -159,7 +157,8 @@ export function PdvScreen({ operator }: Props) {
       setError('O valor recebido é menor que o total do pedido.')
       return
     }
-    const order = placeOrder({
+    setSending(true)
+    const order = await placeOrder({
       channel,
       customer,
       table,
@@ -167,8 +166,9 @@ export function PdvScreen({ operator }: Props) {
       discount: discountValue,
       payment,
       cashReceived: payment === 'dinheiro' && cashReceived !== '' ? received : undefined,
-      operator,
     })
+    setSending(false)
+    if (!order) return
     setPlaced(order)
     setDialogOpen(true)
     clearCart()
@@ -382,8 +382,13 @@ export function PdvScreen({ operator }: Props) {
 
         {error && <p className="lm-alert">{error}</p>}
 
-        <button type="button" className="lm-btn lm-btn--primary lm-btn--block" onClick={finish}>
-          Finalizar pedido · {money(total)}
+        <button
+          type="button"
+          className="lm-btn lm-btn--primary lm-btn--block"
+          onClick={finish}
+          disabled={sending}
+        >
+          {sending ? 'Registrando…' : `Finalizar pedido · ${money(total)}`}
         </button>
       </aside>
 

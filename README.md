@@ -4,12 +4,10 @@ Sistema de gestão de lanchonete: **PDV**, **fila de pedidos**, **estoque por
 ficha técnica**, **compras**, **contas a pagar** e **financeiro** — em um app
 web único, com identidade visual em **laranja, preto e branco**.
 
-Roda sem banco de dados e sem servidor de aplicação: todo o estado (produtos,
-insumos, pedidos, compras, contas e usuários) é guardado no `localStorage` do
-navegador.
-
-> Projeto de demonstração. A lanchonete, os produtos e os fornecedores são
-> fictícios.
+Os dados ficam num banco **Postgres no [Supabase](https://supabase.com/)**,
+com login pelo Supabase Auth, permissões por perfil direto no banco (RLS) e
+**sincronização em tempo real**: vários caixas e a gestão podem trabalhar ao
+mesmo tempo, e um pedido lançado num caixa aparece na hora na fila dos outros.
 
 ## 🌐 Onde acessar
 
@@ -18,16 +16,69 @@ navegador.
 A aplicação é publicada na **Vercel**: cada push na `main` atualiza a produção e
 cada pull request ganha uma URL de preview própria.
 
-Não há nada a configurar no repositório — a Vercel detecta o Vite sozinho
-(`npm run build` → `dist/`) e o app vive na raiz do domínio. O `base: './'` do
-Vite deixa o mesmo build funcionar tanto na raiz quanto num subcaminho.
+A Vercel detecta o Vite sozinho (`npm run build` → `dist/`). O que ela
+precisa é das **variáveis de ambiente do Supabase** — veja o passo 4 abaixo.
+Sem elas, o app abre numa tela de "Configuração pendente".
+
+## 🗄️ Colocando no ar com o Supabase
+
+1. **Crie um projeto** em [supabase.com](https://supabase.com/dashboard).
+2. **Crie as tabelas e regras.** No painel, abra *SQL Editor*, cole o conteúdo
+   de [`supabase/migrations/20261013000000_init.sql`](supabase/migrations/20261013000000_init.sql)
+   e execute. Para começar com o cardápio de exemplo (insumos, produtos e
+   fichas técnicas), execute também [`supabase/seed.sql`](supabase/seed.sql).
+   *(Com a [CLI do Supabase](https://supabase.com/docs/guides/cli):
+   `npx supabase link --project-ref SEU-PROJETO` e `npx supabase db push`.)*
+3. **Feche o cadastro público.** Em *Authentication → Sign In / Providers*,
+   desligue **Allow new users to sign up**. Usuários são criados só pelo
+   administrador, dentro do app.
+4. **Configure o app.** Em *Project Settings → API* copie a *Project URL* e a
+   chave *anon public* e cadastre na Vercel (*Settings → Environment
+   Variables*) e no seu `.env.local` para rodar localmente:
+
+   ```bash
+   SUPABASE_URL=https://SEU-PROJETO.supabase.co
+   SUPABASE_ANON_KEY=sua-chave-anon-publica
+   ```
+
+   Os mesmos nomes com prefixo `VITE_` também funcionam, assim como os que a
+   integração Supabase da Vercel cria (`NEXT_PUBLIC_SUPABASE_URL`,
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY`). Depois de cadastrar na Vercel, faça um
+   novo deploy para o build pegar as variáveis.
+
+   Só a URL e a chave pública entram no app (veja `vite.supabase-env.ts`).
+   A chave *anon* é pública por natureza; quem protege os dados são as
+   políticas de acesso do banco. Se a chave secreta (*service_role*) for
+   colocada no lugar dela por engano, o build falha de propósito.
+5. **Publique a função de usuários** (criar login, trocar senha, desativar e
+   excluir exigem a chave de serviço, que nunca vai para o navegador):
+
+   ```bash
+   npx supabase functions deploy manage-users --project-ref SEU-PROJETO
+   ```
+
+6. **Crie o primeiro administrador.** Em *Authentication → Users → Add user →
+   Create new user*, informe o e-mail `admin@lanchonete-martinica.app`, uma
+   senha forte e marque *Auto Confirm User*. **O primeiro usuário do sistema
+   vira administrador automaticamente.** Entre no app com o usuário `admin` e
+   essa senha e cadastre o restante da equipe em **Usuários**.
 
 ## 🚀 Rodando localmente
 
 ```bash
 npm install
-npm run dev      # http://localhost:5173
+cp .env.example .env.local   # e preencha com os dados do Supabase
+npm run dev                  # http://localhost:5173
 ```
+
+Para ter um Supabase inteiro na sua máquina (precisa de Docker):
+
+```bash
+npx supabase start            # sobe banco, Auth, API e Realtime; aplica migração e seed
+npx supabase functions serve  # serve a função manage-users
+```
+
+O `supabase start` mostra a URL da API e a chave *anon* para o `.env.local`.
 
 Outros comandos:
 
@@ -40,20 +91,25 @@ npm run lint              # typecheck (tsc --noEmit)
 
 O `build:standalone` gera **um arquivo HTML** com CSS e JS embutidos: dá para
 copiar `dist-standalone/index.html` num pen drive e abrir com dois cliques no
-computador do balcão, sem instalar nada.
+computador do balcão, sem instalar nada. Ele fala com o mesmo Supabase (as
+variáveis do `.env.local` entram no build), então precisa de internet.
 
-## 🔑 Acessos de demonstração
+## 🔑 Acesso e perfis
 
-| Perfil | Usuário | Senha | O que enxerga |
-| --- | --- | --- | --- |
-| Administrador | `admin` | `martinica` | Tudo: painel, produtos, estoque, compras, contas a pagar, financeiro e usuários |
-| Operador de PDV | `caixa` | `1234` | Apenas a vitrine de vendas e a fila de pedidos |
+| Perfil | O que enxerga |
+| --- | --- |
+| Administrador | Tudo: painel, produtos, estoque, compras, contas a pagar, financeiro e usuários |
+| Operador de PDV | Apenas a vitrine de vendas e a fila de pedidos |
 
-O cadastro de usuários é editável em **Usuários** (pelo Admin).
-
-> ⚠️ A autenticação é local e de demonstração: usuários e senhas ficam em texto
-> puro no `localStorage` do navegador. Não use como está para controle de
-> acesso real.
+- O login é **usuário e senha**. Por baixo, o Supabase Auth identifica cada
+  pessoa por e-mail: o usuário `caixa` vira `caixa@lanchonete-martinica.app`
+  (domínio configurável em `LOGIN_EMAIL_DOMAIN`, que precisa ter o mesmo
+  valor no app e nos *secrets* da função `manage-users`). Quem digitar um e-mail completo entra com ele.
+- Senhas ficam só no Supabase Auth, com hash — o app nunca as vê.
+- As permissões valem **no banco** (RLS): o operador de PDV não consegue ler
+  compras, contas ou o cadastro de usuários nem chamando a API direto.
+- Desativar um usuário bloqueia o login dele e corta o acesso aos dados na
+  hora, mesmo com a sessão já aberta.
 
 ## 🧾 PDV — a tela do operador
 
@@ -68,6 +124,8 @@ Tema escuro, separado da área de gestão.
 - **Formas de pagamento**: dinheiro (com valor recebido, atalhos de cédula e
   cálculo automático de **troco**), Pix, débito, crédito, vale-refeição e
   fiado.
+- O preço e o custo de cada item são conferidos **no banco** no momento da
+  venda, a partir do cadastro.
 - Ao finalizar, o sistema pergunta **"Deseja imprimir o pedido?"** e imprime um
   **comprovante não fiscal de 76 mm**, no formato de impressora térmica.
 
@@ -153,15 +211,23 @@ imagem, e o app não depende de arquivos externos.
 - [React 18](https://react.dev/) + [TypeScript](https://www.typescriptlang.org/)
 - [Vite 5](https://vitejs.dev/) — dev server e build
 - CSS puro, com variáveis de tema e grid responsivo
-- Persistência em `localStorage` — sem backend
+- [Supabase](https://supabase.com/) — Postgres, Auth, Realtime e Edge Functions
 
 ## 🗂️ Estrutura
 
 ```
+supabase/
+├── migrations/          # tabelas, regras de negócio (funções) e permissões (RLS)
+├── seed.sql             # cardápio, insumos e fichas técnicas de exemplo
+├── functions/
+│   └── manage-users/    # Edge Function: criar, editar e excluir usuários
+└── config.toml          # configuração do Supabase local (CLI)
+
 src/
-├── App.tsx              # login, perfis e navegação entre as telas
-├── store.tsx            # estado global + regras de negócio + persistência
-├── seed.ts              # cardápio, insumos e usuários iniciais
+├── App.tsx              # sessão, login, perfis e navegação entre as telas
+├── supabase.ts          # cliente do Supabase e login por nome de usuário
+├── db.ts                # consultas e conversão das linhas do banco
+├── store.tsx            # estado global, tempo real e ações
 ├── types.ts             # modelo de domínio
 ├── format.ts            # moeda, datas e quantidades em pt-BR
 ├── app.css              # identidade visual (laranja/preto/branco) e impressão
@@ -182,15 +248,22 @@ src/
 
 ## 💾 Dados
 
-Tudo fica no `localStorage` do navegador, sob a chave
-`lanchonete-martinica:v1`. Isso significa que:
+Tudo fica no Postgres do Supabase. As operações que mexem em várias tabelas
+rodam como **funções do banco, numa transação só**:
 
-- os dados são **por navegador e por máquina** — não sincronizam entre caixas;
-- limpar os dados do site apaga o histórico;
-- em **Usuários → Dados do sistema** há o botão **Restaurar dados de
-  demonstração**, que zera pedidos, compras e contas e devolve o cadastro
-  inicial.
+| Função | O que faz |
+| --- | --- |
+| `place_order` | Grava o pedido com preço e custo do cadastro e baixa o estoque pela ficha técnica |
+| `set_order_status` | Avança o pedido na fila e marca a hora da entrega |
+| `cancel_order` | Cancela e devolve os insumos ao estoque (uma vez só) |
+| `register_purchase` | Entrada no estoque, custo médio ponderado e contas a pagar por parcela |
+| `add_expense` | Despesa avulsa parcelada mês a mês |
+| `save_product` | Produto e ficha técnica gravados juntos |
 
-Para operar com vários caixas ao mesmo tempo, o passo natural é trocar a
-camada de persistência de `src/store.tsx` por um backend (Postgres/Supabase,
-por exemplo), mantendo a mesma interface de ações.
+Como a baixa de estoque trava as linhas dos insumos durante a venda, dois
+caixas vendendo o mesmo item ao mesmo tempo nunca se atropelam. Os números de
+pedido e de compra são sequenciais e gerados pelo banco.
+
+O administrador carrega o histórico completo de pedidos (o financeiro filtra
+qualquer período); o caixa carrega só os pedidos abertos e os das últimas 36
+horas. Backups ficam por conta do Supabase (*Database → Backups*).

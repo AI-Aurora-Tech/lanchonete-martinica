@@ -170,24 +170,33 @@ function ExpenseForm({ onCreate }: { onCreate: ReturnType<typeof useStore>['addE
   const [installments, setInstallments] = useState('1')
   const [paid, setPaid] = useState(false)
   const [feedback, setFeedback] = useState('')
+  const [sending, setSending] = useState(false)
 
-  function submit() {
+  async function submit() {
+    if (sending) return
     const value = parseNumber(amount)
     if (!description.trim() || value <= 0) {
       setFeedback('Informe a descrição e um valor maior que zero.')
       return
     }
-    const created = onCreate({
+    const count = Math.max(1, Math.floor(parseNumber(installments) || 1))
+    setSending(true)
+    const ok = await onCreate({
       description: description.trim(),
       supplier,
       category,
       amount: value,
       dueDate,
       payment,
-      installments: Math.max(1, Math.floor(parseNumber(installments) || 1)),
+      installments: count,
       paid,
     })
-    setFeedback(`Despesa lançada em ${created.length} conta(s) a pagar.`)
+    setSending(false)
+    if (!ok) {
+      setFeedback('')
+      return
+    }
+    setFeedback(`Despesa lançada em ${count} conta(s) a pagar.`)
     setDescription('')
     setSupplier('')
     setAmount('')
@@ -282,8 +291,8 @@ function ExpenseForm({ onCreate }: { onCreate: ReturnType<typeof useStore>['addE
         </label>
       </div>
       {feedback && <p className="lm-success">{feedback}</p>}
-      <button type="button" className="lm-btn lm-btn--primary" onClick={submit}>
-        Lançar despesa
+      <button type="button" className="lm-btn lm-btn--primary" onClick={submit} disabled={sending}>
+        {sending ? 'Lançando…' : 'Lançar despesa'}
       </button>
     </section>
   )

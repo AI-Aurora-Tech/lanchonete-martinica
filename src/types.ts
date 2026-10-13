@@ -1,9 +1,8 @@
 // ---------------------------------------------------------------------------
 // Lanchonete Martinica — modelo de domínio
 //
-// O app é autocontido: todo o estado vive em `src/lanchonete/store.tsx` e é
-// persistido no localStorage do navegador. Nada aqui depende da loja virtual
-// que também mora neste repositório.
+// Espelha as tabelas do Supabase (`supabase/migrations`) no formato usado pelas
+// telas. A conversão entre linhas do banco e estes tipos fica em `src/db.ts`.
 // ---------------------------------------------------------------------------
 
 /** Unidade de estoque de um insumo. */
@@ -299,23 +298,21 @@ export const ROLE_LABEL: Record<Role, string> = {
   pdv: 'Operador de PDV',
 }
 
+/** Perfil de acesso (tabela `profiles`, ligada a um usuário do Supabase Auth). */
 export interface User {
   id: string
   name: string
   username: string
-  password: string
   role: Role
   active: boolean
 }
 
-/** Estado completo persistido no localStorage. */
+/** Dados carregados do banco. */
 export interface AppState {
-  version: number
   ingredients: Ingredient[]
   products: Product[]
   orders: Order[]
   purchases: Purchase[]
   payables: Payable[]
   users: User[]
-  counters: { order: number; purchase: number }
 }
