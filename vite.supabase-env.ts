@@ -9,12 +9,42 @@
 // ---------------------------------------------------------------------------
 import { loadEnv } from 'vite'
 
-function pick(env: Record<string, string>, names: string[]): string {
+const URL_NAMES = ['VITE_SUPABASE_URL', 'SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL']
+const KEY_NAMES = [
+  'VITE_SUPABASE_ANON_KEY',
+  'SUPABASE_ANON_KEY',
+  'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+  'SUPABASE_PUBLISHABLE_KEY',
+  'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+]
+
+/** Primeiro nome da lista que tem valor (e qual foi). */
+function pick(env: Record<string, string>, names: string[]): { name: string; value: string } {
   for (const name of names) {
     const value = env[name]?.trim()
-    if (value) return value
+    if (value) return { name, value }
   }
-  return ''
+  return { name: '', value: '' }
+}
+
+/**
+ * Diz no log do build (sem mostrar valores) o que foi encontrado. Se faltar
+ * algo, lista as variáveis parecidas que existem — ajuda a achar nome errado
+ * ou variável cadastrada só para outro ambiente da Vercel.
+ */
+function report(env: Record<string, string>, url: { name: string }, key: { name: string }) {
+  const where = env.VERCEL_ENV ? ` (ambiente Vercel: ${env.VERCEL_ENV})` : ''
+  console.log(
+    `[supabase] URL: ${url.name || 'NÃO ENCONTRADA'} · chave pública: ${key.name || 'NÃO ENCONTRADA'}${where}`,
+  )
+  if (!url.name || !key.name) {
+    const similar = Object.keys(env).filter((k) => /supabase/i.test(k))
+    console.warn(
+      `[supabase] Faltam variáveis. Nomes aceitos — URL: ${URL_NAMES.join(', ')}; ` +
+        `chave: ${KEY_NAMES.join(', ')}. ` +
+        `Variáveis com "supabase" no nome presentes neste build: ${similar.join(', ') || 'nenhuma'}.`,
+    )
+  }
 }
 
 /** Recusa no build uma chave de serviço colocada por engano no lugar da pública. */
@@ -37,20 +67,15 @@ function assertPublicKey(key: string) {
 /** Entradas para o `define` do Vite. */
 export function supabaseDefines(mode: string): Record<string, string> {
   const env = loadEnv(mode, '.', '')
-  const url = pick(env, ['VITE_SUPABASE_URL', 'SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL'])
-  const anonKey = pick(env, [
-    'VITE_SUPABASE_ANON_KEY',
-    'SUPABASE_ANON_KEY',
-    'NEXT_PUBLIC_SUPABASE_ANON_KEY',
-    'SUPABASE_PUBLISHABLE_KEY',
-    'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
-  ])
+  const url = pick(env, URL_NAMES)
+  const anonKey = pick(env, KEY_NAMES)
   const loginDomain = pick(env, ['VITE_LOGIN_EMAIL_DOMAIN', 'LOGIN_EMAIL_DOMAIN'])
-  if (anonKey) assertPublicKey(anonKey)
+  report(env, url, anonKey)
+  if (anonKey.value) assertPublicKey(anonKey.value)
 
   return {
-    __SUPABASE_URL__: JSON.stringify(url),
-    __SUPABASE_ANON_KEY__: JSON.stringify(anonKey),
-    __LOGIN_EMAIL_DOMAIN__: JSON.stringify(loginDomain),
+    __SUPABASE_URL__: JSON.stringify(url.value),
+    __SUPABASE_ANON_KEY__: JSON.stringify(anonKey.value),
+    __LOGIN_EMAIL_DOMAIN__: JSON.stringify(loginDomain.value),
   }
 }

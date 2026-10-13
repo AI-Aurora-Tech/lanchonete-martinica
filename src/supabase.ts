@@ -16,6 +16,12 @@ const LOGIN_DOMAIN = __LOGIN_EMAIL_DOMAIN__ || 'lanchonete-martinica.app'
 
 export const isSupabaseConfigured = Boolean(url && anonKey)
 
+/** Variáveis que faltaram no build (para a tela de configuração pendente). */
+export const missingConfig = [
+  ...(url ? [] : ['SUPABASE_URL']),
+  ...(anonKey ? [] : ['SUPABASE_ANON_KEY']),
+]
+
 export const supabase = createClient(url || 'http://localhost', anonKey || 'missing-key', {
   auth: { persistSession: true, autoRefreshToken: true },
 })

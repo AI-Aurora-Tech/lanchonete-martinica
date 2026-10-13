@@ -2,7 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { fetchProfile } from './db'
 import { LanchoneteStoreProvider, useStore } from './store'
-import { errorMessage, isSupabaseConfigured, supabase, usernameToEmail } from './supabase'
+import {
+  errorMessage,
+  isSupabaseConfigured,
+  missingConfig,
+  supabase,
+  usernameToEmail,
+} from './supabase'
 import { DashboardScreen } from './screens/DashboardScreen'
 import { FinanceScreen } from './screens/FinanceScreen'
 import { PayablesScreen } from './screens/PayablesScreen'
@@ -291,9 +297,18 @@ function MissingConfig() {
         <Logo large />
         <h1>Configuração pendente</h1>
         <p>
-          O app não encontrou a conexão com o banco de dados. Defina{' '}
-          <code>SUPABASE_URL</code> e <code>SUPABASE_ANON_KEY</code> (em <code>.env.local</code>{' '}
-          ou nas variáveis de ambiente da Vercel) e gere o build de novo.
+          O app não encontrou a conexão com o banco de dados. Faltou no build:{' '}
+          {missingConfig.map((name, i) => (
+            <span key={name}>
+              {i > 0 && ' e '}
+              <code>{name}</code>
+            </span>
+          ))}
+          .
+        </p>
+        <p>
+          Cadastre em <code>.env.local</code> ou nas variáveis de ambiente da Vercel — marcando os
+          ambientes <strong>Production</strong> e <strong>Preview</strong> — e faça um novo deploy.
         </p>
       </div>
     </div>
