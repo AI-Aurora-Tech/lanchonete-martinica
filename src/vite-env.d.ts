@@ -1,7 +1,6 @@
 /// <reference types="vite/client" />
 
-interface ImportMetaEnv {
-  readonly VITE_SUPABASE_URL?: string
-  readonly VITE_SUPABASE_ANON_KEY?: string
-  readonly VITE_LOGIN_EMAIL_DOMAIN?: string
-}
+// Injetadas no build por `vite.supabase-env.ts` (aceita nomes com ou sem VITE_).
+declare const __SUPABASE_URL__: string
+declare const __SUPABASE_ANON_KEY__: string
+declare const __LOGIN_EMAIL_DOMAIN__: string

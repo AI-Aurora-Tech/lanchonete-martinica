@@ -37,13 +37,19 @@ Sem elas, o app abre numa tela de "Configuração pendente".
    Variables*) e no seu `.env.local` para rodar localmente:
 
    ```bash
-   VITE_SUPABASE_URL=https://SEU-PROJETO.supabase.co
-   VITE_SUPABASE_ANON_KEY=sua-chave-anon-publica
+   SUPABASE_URL=https://SEU-PROJETO.supabase.co
+   SUPABASE_ANON_KEY=sua-chave-anon-publica
    ```
 
-   Depois de cadastrar na Vercel, faça um novo deploy para o build pegar as
-   variáveis. A chave *anon* é pública por natureza; quem protege os dados
-   são as políticas de acesso do banco.
+   Os mesmos nomes com prefixo `VITE_` também funcionam, assim como os que a
+   integração Supabase da Vercel cria (`NEXT_PUBLIC_SUPABASE_URL`,
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY`). Depois de cadastrar na Vercel, faça um
+   novo deploy para o build pegar as variáveis.
+
+   Só a URL e a chave pública entram no app (veja `vite.supabase-env.ts`).
+   A chave *anon* é pública por natureza; quem protege os dados são as
+   políticas de acesso do banco. Se a chave secreta (*service_role*) for
+   colocada no lugar dela por engano, o build falha de propósito.
 5. **Publique a função de usuários** (criar login, trocar senha, desativar e
    excluir exigem a chave de serviço, que nunca vai para o navegador):
 
@@ -97,9 +103,8 @@ variáveis do `.env.local` entram no build), então precisa de internet.
 
 - O login é **usuário e senha**. Por baixo, o Supabase Auth identifica cada
   pessoa por e-mail: o usuário `caixa` vira `caixa@lanchonete-martinica.app`
-  (domínio configurável em `VITE_LOGIN_EMAIL_DOMAIN`; a função
-  `manage-users` usa a variável `LOGIN_EMAIL_DOMAIN`, que precisa ter o mesmo
-  valor). Quem digitar um e-mail completo entra com ele.
+  (domínio configurável em `LOGIN_EMAIL_DOMAIN`, que precisa ter o mesmo
+  valor no app e nos *secrets* da função `manage-users`). Quem digitar um e-mail completo entra com ele.
 - Senhas ficam só no Supabase Auth, com hash — o app nunca as vê.
 - As permissões valem **no banco** (RLS): o operador de PDV não consegue ler
   compras, contas ou o cadastro de usuários nem chamando a API direto.

@@ -292,8 +292,8 @@ function MissingConfig() {
         <h1>Configuração pendente</h1>
         <p>
           O app não encontrou a conexão com o banco de dados. Defina{' '}
-          <code>VITE_SUPABASE_URL</code> e <code>VITE_SUPABASE_ANON_KEY</code> (em{' '}
-          <code>.env.local</code> ou nas variáveis de ambiente da Vercel) e gere o build de novo.
+          <code>SUPABASE_URL</code> e <code>SUPABASE_ANON_KEY</code> (em <code>.env.local</code>{' '}
+          ou nas variáveis de ambiente da Vercel) e gere o build de novo.
         </p>
       </div>
     </div>

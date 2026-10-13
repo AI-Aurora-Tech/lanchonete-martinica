@@ -1,17 +1,18 @@
 // ---------------------------------------------------------------------------
 // Conexão com o Supabase (banco, autenticação e tempo real).
 //
-// URL e chave pública vêm das variáveis de ambiente do Vite — veja
-// `.env.example`. A chave "anon" é pública por natureza: quem protege os
+// URL e chave pública vêm das variáveis de ambiente (SUPABASE_URL e
+// SUPABASE_ANON_KEY, com ou sem o prefixo VITE_) — veja `.env.example` e
+// `vite.supabase-env.ts`. A chave "anon" é pública por natureza: quem protege os
 // dados são as políticas de acesso (RLS) definidas em `supabase/migrations`.
 // ---------------------------------------------------------------------------
 import { createClient } from '@supabase/supabase-js'
 
-const url = import.meta.env.VITE_SUPABASE_URL
-const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+const url = __SUPABASE_URL__
+const anonKey = __SUPABASE_ANON_KEY__
 
 /** Domínio usado para transformar o nome de usuário em e-mail de login. */
-const LOGIN_DOMAIN = import.meta.env.VITE_LOGIN_EMAIL_DOMAIN || 'lanchonete-martinica.app'
+const LOGIN_DOMAIN = __LOGIN_EMAIL_DOMAIN__ || 'lanchonete-martinica.app'
 
 export const isSupabaseConfigured = Boolean(url && anonKey)
 
