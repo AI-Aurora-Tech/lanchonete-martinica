@@ -98,7 +98,7 @@ export function ProductsScreen() {
                         type="button"
                         className="lm-btn lm-btn--danger lm-btn--sm"
                         onClick={() => {
-                          if (confirm(`Excluir o produto "${p.name}"?`)) removeProduct(p.id)
+                          if (confirm(`Excluir o produto "${p.name}"?`)) void removeProduct(p.id)
                         }}
                       >
                         Excluir
@@ -116,9 +116,8 @@ export function ProductsScreen() {
         <ProductDialog
           product={editing}
           onCancel={() => setEditing(null)}
-          onSave={(p) => {
-            saveProduct(p)
-            setEditing(null)
+          onSave={async (p) => {
+            if (await saveProduct(p)) setEditing(null)
           }}
         />
       )}

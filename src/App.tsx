@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { Session } from '@supabase/supabase-js'
+import { fetchProfile } from './db'
 import { LanchoneteStoreProvider, useStore } from './store'
+import { errorMessage, isSupabaseConfigured, supabase, usernameToEmail } from './supabase'
 import { DashboardScreen } from './screens/DashboardScreen'
 import { FinanceScreen } from './screens/FinanceScreen'
 import { PayablesScreen } from './screens/PayablesScreen'
@@ -11,8 +14,6 @@ import { StockScreen } from './screens/StockScreen'
 import { UsersScreen } from './screens/UsersScreen'
 import { ROLE_LABEL, type Role, type User } from './types'
 import './app.css'
-
-const SESSION_KEY = 'lanchonete-martinica:session'
 
 type TabId =
   | 'pdv'
@@ -46,49 +47,92 @@ const TABS: Tab[] = [
   { id: 'usuarios', label: 'Usuários', roles: ['admin'], area: 'gestao' },
 ]
 
-/** Raiz do app — injeta o estado e decide entre login e área logada. */
+/** Raiz do app — confere a configuração e a sessão antes de abrir as telas. */
 export default function App() {
-  return (
-    <LanchoneteStoreProvider>
-      <Shell />
-    </LanchoneteStoreProvider>
-  )
-}
-
-function Shell() {
-  const { users, orders, ingredients } = useStore()
-  const [userId, setUserId] = useState<string | null>(() => sessionStorage.getItem(SESSION_KEY))
-
-  const user = useMemo(
-    () => users.find((u) => u.id === userId && u.active) ?? null,
-    [users, userId],
-  )
-
-  const tabs = useMemo(() => (user ? TABS.filter((t) => t.roles.includes(user.role)) : []), [user])
-  const [tab, setTab] = useState<TabId>('pdv')
-
-  useEffect(() => {
-    if (user && !tabs.some((t) => t.id === tab)) {
-      setTab(user.role === 'admin' ? 'painel' : 'pdv')
-    }
-  }, [user, tabs, tab])
-
   useEffect(() => {
     document.title = 'Lanchonete Martinica'
   }, [])
 
-  function login(u: User) {
-    sessionStorage.setItem(SESSION_KEY, u.id)
-    setUserId(u.id)
-    setTab(u.role === 'admin' ? 'painel' : 'pdv')
-  }
+  if (!isSupabaseConfigured) return <MissingConfig />
+  return <AuthGate />
+}
 
-  function logout() {
-    sessionStorage.removeItem(SESSION_KEY)
-    setUserId(null)
-  }
+/**
+ * Sessão do Supabase Auth + perfil do usuário. Sem sessão (ou com perfil
+ * inativo) mostra o login; com sessão, carrega os dados e abre o app.
+ */
+function AuthGate() {
+  const [session, setSession] = useState<Session | null | undefined>(undefined)
+  const [user, setUser] = useState<User | null>(null)
+  const [loginError, setLoginError] = useState('')
 
-  if (!user) return <Login onLogin={login} />
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => setSession(data.session))
+    const { data } = supabase.auth.onAuthStateChange((_event, next) => setSession(next))
+    return () => data.subscription.unsubscribe()
+  }, [])
+
+  const userId = session?.user.id
+  useEffect(() => {
+    if (!userId) {
+      setUser(null)
+      return
+    }
+    let alive = true
+    fetchProfile(userId)
+      .then((profile) => {
+        if (!alive) return
+        if (!profile || !profile.active) {
+          setLoginError(
+            profile ? 'Este usuário está inativo. Fale com o administrador.' : 'Usuário sem perfil de acesso.',
+          )
+          void supabase.auth.signOut()
+          return
+        }
+        setUser((prev) =>
+          prev && prev.id === profile.id && prev.role === profile.role && prev.name === profile.name
+            ? prev
+            : profile,
+        )
+      })
+      .catch((e) => {
+        if (!alive) return
+        setLoginError(errorMessage(e))
+        void supabase.auth.signOut()
+      })
+    return () => {
+      alive = false
+    }
+  }, [userId])
+
+  const logout = useCallback(() => {
+    setLoginError('')
+    void supabase.auth.signOut()
+  }, [])
+
+  if (session === undefined || (session && !user && !loginError)) return <Loading />
+  if (!session || !user) return <Login initialError={loginError} onAttempt={() => setLoginError('')} />
+
+  return (
+    <LanchoneteStoreProvider key={user.id} user={user}>
+      <Shell user={user} onLogout={logout} />
+    </LanchoneteStoreProvider>
+  )
+}
+
+function Shell({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const { orders, ingredients, ready, error, dismissError } = useStore()
+
+  const tabs = useMemo(() => TABS.filter((t) => t.roles.includes(user.role)), [user])
+  const [tab, setTab] = useState<TabId>(user.role === 'admin' ? 'painel' : 'pdv')
+
+  useEffect(() => {
+    if (!tabs.some((t) => t.id === tab)) {
+      setTab(user.role === 'admin' ? 'painel' : 'pdv')
+    }
+  }, [user, tabs, tab])
+
+  if (!ready) return <Loading />
 
   const area = TABS.find((t) => t.id === tab)?.area ?? 'gestao'
   const queueCount = orders.filter(
@@ -128,14 +172,23 @@ function Shell() {
             <strong>{user.name}</strong>
             <em>{ROLE_LABEL[user.role]}</em>
           </span>
-          <button type="button" className="lm-btn lm-btn--ghost lm-btn--sm" onClick={logout}>
+          <button type="button" className="lm-btn lm-btn--ghost lm-btn--sm" onClick={onLogout}>
             Sair
           </button>
         </div>
       </header>
 
+      {error && (
+        <div className="lm-toast" role="alert">
+          <span>{error}</span>
+          <button type="button" className="lm-btn lm-btn--ghost lm-btn--sm" onClick={dismissError}>
+            Fechar
+          </button>
+        </div>
+      )}
+
       <main className="lm-main">
-        {tab === 'pdv' && <PdvScreen operator={user.name} />}
+        {tab === 'pdv' && <PdvScreen />}
         {tab === 'fila' && <QueueScreen />}
         {tab === 'painel' && <DashboardScreen onNavigate={(t) => setTab(t as TabId)} />}
         {tab === 'produtos' && <ProductsScreen />}
@@ -149,27 +202,36 @@ function Shell() {
   )
 }
 
-function Login({ onLogin }: { onLogin: (u: User) => void }) {
-  const { users } = useStore()
+function Login({ initialError, onAttempt }: { initialError: string; onAttempt: () => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault()
-    const found = users.find(
-      (u) => u.username.toLowerCase() === username.trim().toLowerCase() && u.password === password,
-    )
-    if (!found) {
-      setError('Usuário ou senha inválidos.')
+    if (!username.trim() || !password) {
+      setError('Informe usuário e senha.')
       return
     }
-    if (!found.active) {
-      setError('Este usuário está inativo. Fale com o administrador.')
-      return
+    setBusy(true)
+    setError('')
+    onAttempt()
+    const { error: authError } = await supabase.auth.signInWithPassword({
+      email: usernameToEmail(username),
+      password,
+    })
+    setBusy(false)
+    if (authError) {
+      setError(
+        authError.message === 'Invalid login credentials'
+          ? 'Usuário ou senha inválidos.'
+          : errorMessage(authError),
+      )
     }
-    onLogin(found)
   }
+
+  const shown = error || initialError
 
   return (
     <div className="lm-login">
@@ -185,6 +247,7 @@ function Login({ onLogin }: { onLogin: (u: User) => void }) {
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoCapitalize="none"
+            autoComplete="username"
             autoFocus
           />
         </label>
@@ -195,25 +258,44 @@ function Login({ onLogin }: { onLogin: (u: User) => void }) {
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
           />
         </label>
 
-        {error && <p className="lm-alert">{error}</p>}
+        {shown && <p className="lm-alert">{shown}</p>}
 
-        <button type="submit" className="lm-btn lm-btn--primary lm-btn--block">
-          Entrar
+        <button type="submit" className="lm-btn lm-btn--primary lm-btn--block" disabled={busy}>
+          {busy ? 'Entrando…' : 'Entrar'}
         </button>
-
-        <div className="lm-login__hint">
-          <strong>Acessos de demonstração</strong>
-          <span>
-            Administrador — <code>admin</code> / <code>martinica</code>
-          </span>
-          <span>
-            Operador de PDV — <code>caixa</code> / <code>1234</code>
-          </span>
-        </div>
       </form>
+    </div>
+  )
+}
+
+function Loading() {
+  return (
+    <div className="lm-login">
+      <div className="lm-login__box lm-loading" aria-busy="true">
+        <Logo large />
+        <p>Carregando…</p>
+      </div>
+    </div>
+  )
+}
+
+/** Build sem as variáveis do Supabase: explica o que falta configurar. */
+function MissingConfig() {
+  return (
+    <div className="lm-login">
+      <div className="lm-login__box">
+        <Logo large />
+        <h1>Configuração pendente</h1>
+        <p>
+          O app não encontrou a conexão com o banco de dados. Defina{' '}
+          <code>VITE_SUPABASE_URL</code> e <code>VITE_SUPABASE_ANON_KEY</code> (em{' '}
+          <code>.env.local</code> ou nas variáveis de ambiente da Vercel) e gere o build de novo.
+        </p>
+      </div>
     </div>
   )
 }

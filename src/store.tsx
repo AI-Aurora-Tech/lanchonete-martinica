@@ -1,9 +1,11 @@
 // ---------------------------------------------------------------------------
 // Estado global da Lanchonete Martinica.
 //
-// Tudo (produtos, insumos, pedidos, compras, contas a pagar e usuários) vive
-// num único objeto persistido no localStorage. Isso mantém o app funcionando
-// sem backend, mantendo as regras de negócio num só lugar.
+// Os dados vivem no Supabase. Este provider carrega o que o perfil logado pode
+// ver, mantém tudo sincronizado em tempo real entre caixas e gestão, e expõe
+// as ações. As regras que mexem em várias tabelas (venda, cancelamento,
+// compra, despesa, ficha técnica) rodam no banco, em uma transação só — veja
+// `supabase/migrations`.
 // ---------------------------------------------------------------------------
 import {
   createContext,
@@ -15,7 +17,18 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { seedState, STATE_VERSION } from './seed'
+import {
+  fetchIngredients,
+  fetchOrder,
+  fetchOrders,
+  fetchPayables,
+  fetchPayablesOfPurchase,
+  fetchProducts,
+  fetchPurchase,
+  fetchPurchases,
+  fetchUsers,
+} from './db'
+import { errorMessage, supabase } from './supabase'
 import {
   PURCHASE_UNIT_FACTOR,
   type AppState,
@@ -26,10 +39,9 @@ import {
   type Product,
   type Purchase,
   type PurchaseLine,
+  type Role,
   type User,
 } from './types'
-
-const STORAGE_KEY = 'lanchonete-martinica:v1'
 
 /** Rascunho de despesa avulsa (vira conta a pagar). */
 export interface Expense {
@@ -43,32 +55,14 @@ export interface Expense {
   paid: boolean
 }
 
-function loadState(): AppState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return seedState()
-    const parsed = JSON.parse(raw) as AppState
-    if (!parsed || parsed.version !== STATE_VERSION) return seedState()
-    // Blindagem contra estados salvos por versões incompletas.
-    return {
-      ...seedState(),
-      ...parsed,
-      counters: {
-        order: parsed.counters?.order ?? 1,
-        purchase: parsed.counters?.purchase ?? 1,
-      },
-    }
-  } catch {
-    return seedState()
-  }
-}
-
-function saveState(state: AppState) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  } catch {
-    // Cota cheia ou storage bloqueado — o app segue funcionando em memória.
-  }
+/** Cadastro ou edição de usuário. Senha vazia na edição mantém a atual. */
+export interface UserDraft {
+  id?: string
+  name: string
+  username: string
+  password: string
+  role: Role
+  active: boolean
 }
 
 export function uid(prefix: string): string {
@@ -104,22 +98,6 @@ export function productAvailability(
   return Number.isFinite(min) ? Math.max(0, min) : null
 }
 
-/** Adiciona (ou subtrai, com sinal negativo) as quantidades da ficha técnica. */
-function applyRecipe(
-  ingredients: Ingredient[],
-  product: Product | undefined,
-  qty: number,
-  sign: 1 | -1,
-): Ingredient[] {
-  if (!product) return ingredients
-  return ingredients.map((ing) => {
-    const line = product.recipe.find((r) => r.ingredientId === ing.id)
-    if (!line) return ing
-    const next = round3(ing.stock + sign * line.qty * qty)
-    return { ...ing, stock: Math.max(0, next) }
-  })
-}
-
 function round3(n: number): number {
   return Math.round(n * 1000) / 1000
 }
@@ -128,10 +106,12 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100
 }
 
-/** Soma `months` meses a uma data ISO (YYYY-MM-DD). */
+/** Soma `months` meses a uma data ISO (YYYY-MM-DD), parando no fim do mês. */
 export function addMonths(iso: string, months: number): string {
   const [y, m, d] = iso.split('-').map(Number)
-  const date = new Date(y, (m ?? 1) - 1 + months, d ?? 1)
+  const first = new Date(y, (m ?? 1) - 1 + months, 1)
+  const lastDay = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate()
+  const date = new Date(first.getFullYear(), first.getMonth(), Math.min(d ?? 1, lastDay))
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
     date.getDate(),
   ).padStart(2, '0')}`
@@ -150,11 +130,11 @@ export interface OrderDraft {
   channel: Order['channel']
   customer?: string
   table?: string
-  items: Order['items']
+  /** Preço e custo são recalculados no banco a partir do cadastro. */
+  items: Pick<Order['items'][number], 'productId' | 'qty' | 'notes'>[]
   discount: number
   payment: Order['payment']
   cashReceived?: number
-  operator: string
 }
 
 export interface PurchaseDraft {
@@ -167,311 +147,391 @@ export interface PurchaseDraft {
   notes?: string
 }
 
+/** Fatias do estado que podem ser recarregadas do banco. */
+type Resource = 'ingredients' | 'products' | 'orders' | 'purchases' | 'payables' | 'users'
+
+/** Tabela alterada (tempo real) → fatia a recarregar. */
+const TABLE_RESOURCE: Record<string, Resource> = {
+  ingredients: 'ingredients',
+  products: 'products',
+  recipe_items: 'products',
+  orders: 'orders',
+  order_items: 'orders',
+  purchases: 'purchases',
+  purchase_lines: 'purchases',
+  payables: 'payables',
+  profiles: 'users',
+}
+
 interface StoreValue extends AppState {
+  /** Primeira carga concluída. */
+  ready: boolean
+  /** Último erro de uma ação (mostrado num aviso na tela). */
+  error: string | null
+  dismissError: () => void
   /** Registra a venda, baixa o estoque e coloca o pedido na fila. */
-  placeOrder: (draft: OrderDraft) => Order
-  setOrderStatus: (id: string, status: OrderStatus) => void
-  cancelOrder: (id: string) => void
+  placeOrder: (draft: OrderDraft) => Promise<Order | null>
+  setOrderStatus: (id: string, status: OrderStatus) => Promise<boolean>
+  cancelOrder: (id: string) => Promise<boolean>
   /** Entrada de mercadoria: soma estoque, recalcula custo médio e gera contas. */
-  registerPurchase: (draft: PurchaseDraft) => { purchase: Purchase; payables: Payable[] }
-  addExpense: (draft: Expense) => Payable[]
-  payPayable: (id: string, date?: string) => void
-  reopenPayable: (id: string) => void
-  removePayable: (id: string) => void
-  saveProduct: (product: Product) => void
-  removeProduct: (id: string) => void
-  saveIngredient: (ingredient: Ingredient) => void
-  removeIngredient: (id: string) => void
-  adjustStock: (id: string, newStock: number) => void
-  saveUser: (user: User) => void
-  removeUser: (id: string) => void
-  resetDemo: () => void
+  registerPurchase: (
+    draft: PurchaseDraft,
+  ) => Promise<{ purchase: Purchase; payables: Payable[] } | null>
+  addExpense: (draft: Expense) => Promise<boolean>
+  payPayable: (id: string, date?: string) => Promise<boolean>
+  reopenPayable: (id: string) => Promise<boolean>
+  removePayable: (id: string) => Promise<boolean>
+  saveProduct: (product: Product) => Promise<boolean>
+  removeProduct: (id: string) => Promise<boolean>
+  saveIngredient: (ingredient: Ingredient) => Promise<boolean>
+  removeIngredient: (id: string) => Promise<boolean>
+  adjustStock: (id: string, newStock: number) => Promise<boolean>
+  saveUser: (user: UserDraft) => Promise<boolean>
+  removeUser: (id: string) => Promise<boolean>
+}
+
+const EMPTY: AppState = {
+  ingredients: [],
+  products: [],
+  orders: [],
+  purchases: [],
+  payables: [],
+  users: [],
 }
 
 const StoreContext = createContext<StoreValue | null>(null)
 
-export function LanchoneteStoreProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AppState>(loadState)
+/** Lança o erro de uma resposta do Supabase, se houver. */
+function check<T extends { error: unknown }>(res: T): T {
+  if (res.error) throw res.error
+  return res
+}
 
-  // Espelho do estado para as ações que precisam LER o estado atual e devolver
-  // o objeto criado na mesma chamada (número do pedido, contas geradas etc.).
+export function LanchoneteStoreProvider({
+  user,
+  children,
+}: {
+  /** Perfil logado — define o que é carregado. */
+  user: User
+  children: ReactNode
+}) {
+  const isAdmin = user.role === 'admin'
+  const [state, setState] = useState<AppState>(EMPTY)
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
   const ref = useRef(state)
   ref.current = state
 
+  const loaders = useMemo<Record<Resource, () => Promise<Partial<AppState>>>>(
+    () => ({
+      ingredients: async () => ({ ingredients: await fetchIngredients() }),
+      products: async () => ({ products: await fetchProducts() }),
+      orders: async () => ({ orders: await fetchOrders(isAdmin) }),
+      purchases: async () => ({ purchases: isAdmin ? await fetchPurchases() : [] }),
+      payables: async () => ({ payables: isAdmin ? await fetchPayables() : [] }),
+      users: async () => ({ users: isAdmin ? await fetchUsers() : [user] }),
+    }),
+    [isAdmin, user],
+  )
+
+  const reload = useCallback(
+    async (...resources: Resource[]) => {
+      try {
+        const parts = await Promise.all([...new Set(resources)].map((r) => loaders[r]()))
+        setState((prev) => Object.assign({ ...prev }, ...parts))
+      } catch (e) {
+        setError(errorMessage(e))
+      }
+    },
+    [loaders],
+  )
+
+  // Carga inicial + assinatura de tempo real. Mudanças feitas em outro caixa
+  // chegam aqui e recarregam só a fatia afetada (agrupadas em 300 ms).
   useEffect(() => {
-    saveState(state)
-  }, [state])
+    let alive = true
+    let loaded = false
+    const pending = new Set<Resource>()
+    let timer: ReturnType<typeof setTimeout> | undefined
 
-  const placeOrder = useCallback((draft: OrderDraft): Order => {
-    const current = ref.current
-    const subtotal = round2(draft.items.reduce((s, i) => s + i.unitPrice * i.qty, 0))
-    const discount = round2(Math.max(0, Math.min(draft.discount, subtotal)))
-    const total = round2(subtotal - discount)
-
-    const order: Order = {
-      id: uid('ord'),
-      number: current.counters.order,
-      createdAt: new Date().toISOString(),
-      channel: draft.channel,
-      customer: draft.customer?.trim() || undefined,
-      table: draft.table?.trim() || undefined,
-      items: draft.items.map((i) => ({ ...i })),
-      subtotal,
-      discount,
-      total,
-      payment: draft.payment,
-      cashReceived: draft.payment === 'dinheiro' ? draft.cashReceived : undefined,
-      change:
-        draft.payment === 'dinheiro' && draft.cashReceived != null
-          ? round2(Math.max(0, draft.cashReceived - total))
-          : undefined,
-      status: 'fila',
-      operator: draft.operator,
+    const flush = () => {
+      const list = [...pending]
+      pending.clear()
+      if (alive && list.length > 0) void reload(...list)
     }
 
-    setState((prev) => {
-      // Baixa de estoque no momento em que a venda é registrada.
-      let ingredients = prev.ingredients
-      for (const item of order.items) {
-        const product = prev.products.find((p) => p.id === item.productId)
-        ingredients = applyRecipe(ingredients, product, item.qty, -1)
-      }
-      return {
-        ...prev,
-        ingredients,
-        orders: [order, ...prev.orders],
-        counters: { ...prev.counters, order: Math.max(prev.counters.order + 1, order.number + 1) },
-      }
-    })
-
-    return order
-  }, [])
-
-  const setOrderStatus = useCallback((id: string, status: OrderStatus) => {
-    setState((prev) => ({
-      ...prev,
-      orders: prev.orders.map((o) =>
-        o.id === id
-          ? {
-              ...o,
-              status,
-              deliveredAt: status === 'entregue' ? new Date().toISOString() : o.deliveredAt,
-            }
-          : o,
-      ),
-    }))
-  }, [])
-
-  const cancelOrder = useCallback((id: string) => {
-    setState((prev) => {
-      const order = prev.orders.find((o) => o.id === id)
-      if (!order || order.status === 'cancelado') return prev
-      // Cancelou: devolve os insumos ao estoque.
-      let ingredients = prev.ingredients
-      for (const item of order.items) {
-        const product = prev.products.find((p) => p.id === item.productId)
-        ingredients = applyRecipe(ingredients, product, item.qty, 1)
-      }
-      return {
-        ...prev,
-        ingredients,
-        orders: prev.orders.map((o) =>
-          o.id === id
-            ? { ...o, status: 'cancelado' as OrderStatus, canceledAt: new Date().toISOString() }
-            : o,
-        ),
-      }
-    })
-  }, [])
-
-  const registerPurchase = useCallback((draft: PurchaseDraft) => {
-    const current = ref.current
-    const total = round2(draft.lines.reduce((s, l) => s + l.qty * l.unitCost, 0))
-    const installments = Math.max(1, Math.floor(draft.installments))
-
-    const purchase: Purchase = {
-      id: uid('cmp'),
-      number: current.counters.purchase,
-      createdAt: new Date().toISOString(),
-      supplier: draft.supplier.trim() || 'Fornecedor não informado',
-      invoice: draft.invoice?.trim() || undefined,
-      lines: draft.lines.map((l) => ({ ...l })),
-      total,
-      payment: draft.payment,
-      dueDate: draft.dueDate,
-      installments,
-      notes: draft.notes?.trim() || undefined,
-    }
-
-    // Uma conta a pagar por parcela, com vencimento mês a mês.
-    const payables: Payable[] = splitInstallments(total, installments).map((amount, i) => ({
-      id: uid('pag'),
-      description:
-        installments > 1
-          ? `Compra #${purchase.number} — ${purchase.supplier} (${i + 1}/${installments})`
-          : `Compra #${purchase.number} — ${purchase.supplier}`,
-      supplier: purchase.supplier,
-      origin: 'compra',
-      category: 'insumos',
-      purchaseId: purchase.id,
-      amount,
-      dueDate: addMonths(purchase.dueDate, i),
-      payment: purchase.payment,
-      status: 'aberto',
-      installment: { n: i + 1, of: installments },
-      createdAt: new Date().toISOString(),
-    }))
-
-    setState((prev) => {
-      // Entrada no estoque com recálculo do custo médio ponderado.
-      const ingredients = prev.ingredients.map((ing) => {
-        const lines = purchase.lines.filter((l) => l.ingredientId === ing.id)
-        if (lines.length === 0) return ing
-        let stock = ing.stock
-        let avgCost = ing.avgCost
-        for (const line of lines) {
-          if (line.baseQty <= 0) continue
-          const costPerBase = (line.qty * line.unitCost) / line.baseQty
-          const nextStock = stock + line.baseQty
-          avgCost =
-            nextStock > 0
-              ? round2((stock * avgCost + line.baseQty * costPerBase) / nextStock)
-              : round2(costPerBase)
-          stock = round3(nextStock)
+    const channel = supabase
+      .channel('lanchonete-martinica')
+      .on('postgres_changes', { event: '*', schema: 'public' }, (payload) => {
+        const resource = TABLE_RESOURCE[payload.table]
+        if (!resource) return
+        pending.add(resource)
+        clearTimeout(timer)
+        timer = setTimeout(flush, 300)
+      })
+      .subscribe((status) => {
+        // Ao reconectar, recarrega tudo para não perder o que mudou no meio.
+        if (status === 'SUBSCRIBED' && alive && loaded) {
+          void reload(...(Object.keys(loaders) as Resource[]))
         }
-        return { ...ing, stock, avgCost }
       })
 
-      return {
-        ...prev,
-        ingredients,
-        purchases: [purchase, ...prev.purchases],
-        payables: [...payables, ...prev.payables],
-        counters: {
-          ...prev.counters,
-          purchase: Math.max(prev.counters.purchase + 1, purchase.number + 1),
-        },
-      }
+    void reload(...(Object.keys(loaders) as Resource[])).finally(() => {
+      loaded = true
+      if (alive) setReady(true)
     })
 
-    return { purchase, payables }
+    return () => {
+      alive = false
+      clearTimeout(timer)
+      void supabase.removeChannel(channel)
+    }
+  }, [loaders, reload])
+
+  /** Executa uma ação; em caso de erro, mostra o aviso e devolve `null`. */
+  const run = useCallback(async <T,>(fn: () => Promise<T>): Promise<T | null> => {
+    try {
+      setError(null)
+      return await fn()
+    } catch (e) {
+      setError(errorMessage(e))
+      return null
+    }
   }, [])
 
-  const addExpense = useCallback((draft: Expense) => {
-    const amounts = splitInstallments(round2(draft.amount), draft.installments)
-    const created: Payable[] = amounts.map((amount, i) => ({
-      id: uid('pag'),
-      description:
-        draft.installments > 1
-          ? `${draft.description} (${i + 1}/${draft.installments})`
-          : draft.description,
-      supplier: draft.supplier?.trim() || undefined,
-      origin: 'despesa' as const,
-      category: draft.category,
-      amount,
-      dueDate: addMonths(draft.dueDate, i),
-      payment: draft.payment,
-      status: draft.paid && i === 0 ? ('pago' as const) : ('aberto' as const),
-      paidAt: draft.paid && i === 0 ? draft.dueDate : undefined,
-      createdAt: new Date().toISOString(),
-    }))
-    setState((prev) => ({ ...prev, payables: [...created, ...prev.payables] }))
-    return created
-  }, [])
+  /** Variante para ações sem retorno: `true` quando deu certo. */
+  const act = useCallback(
+    async (fn: () => Promise<unknown>, ...after: Resource[]) => {
+      const ok = (await run(async () => (await fn(), true))) ?? false
+      if (ok && after.length > 0) await reload(...after)
+      return ok
+    },
+    [run, reload],
+  )
 
-  const payPayable = useCallback((id: string, date?: string) => {
-    setState((prev) => ({
-      ...prev,
-      payables: prev.payables.map((p) =>
-        p.id === id
-          ? { ...p, status: 'pago', paidAt: date ?? new Date().toISOString().slice(0, 10) }
-          : p,
+  const placeOrder = useCallback(
+    (draft: OrderDraft) =>
+      run(async () => {
+        const { data: id } = check(
+          await supabase.rpc('place_order', {
+            draft: {
+              channel: draft.channel,
+              customer: draft.customer ?? null,
+              table: draft.table ?? null,
+              discount: round2(Math.max(0, draft.discount)),
+              payment: draft.payment,
+              cashReceived: draft.payment === 'dinheiro' ? draft.cashReceived ?? null : null,
+              items: draft.items.map((i) => ({
+                productId: i.productId,
+                qty: i.qty,
+                notes: i.notes ?? null,
+              })),
+            },
+          }),
+        )
+        const order = await fetchOrder(id as string)
+        void reload('orders', 'ingredients')
+        return order
+      }),
+    [run, reload],
+  )
+
+  const setOrderStatus = useCallback(
+    (id: string, status: OrderStatus) =>
+      act(
+        async () => check(await supabase.rpc('set_order_status', { p_order_id: id, p_status: status })),
+        'orders',
       ),
-    }))
-  }, [])
+    [act],
+  )
 
-  const reopenPayable = useCallback((id: string) => {
-    setState((prev) => ({
-      ...prev,
-      payables: prev.payables.map((p) =>
-        p.id === id ? { ...p, status: 'aberto', paidAt: undefined } : p,
+  const cancelOrder = useCallback(
+    (id: string) =>
+      act(
+        async () => check(await supabase.rpc('cancel_order', { p_order_id: id })),
+        'orders',
+        'ingredients',
       ),
-    }))
-  }, [])
+    [act],
+  )
 
-  const removePayable = useCallback((id: string) => {
-    setState((prev) => ({ ...prev, payables: prev.payables.filter((p) => p.id !== id) }))
-  }, [])
+  const registerPurchase = useCallback(
+    (draft: PurchaseDraft) =>
+      run(async () => {
+        const { data: id } = check(
+          await supabase.rpc('register_purchase', {
+            draft: {
+              supplier: draft.supplier,
+              invoice: draft.invoice ?? null,
+              payment: draft.payment,
+              dueDate: draft.dueDate,
+              installments: draft.installments,
+              notes: draft.notes ?? null,
+              lines: draft.lines.map((l) => ({
+                ingredientId: l.ingredientId,
+                qty: l.qty,
+                unit: l.unit,
+                unitCost: l.unitCost,
+              })),
+            },
+          }),
+        )
+        const [purchase, payables] = await Promise.all([
+          fetchPurchase(id as string),
+          fetchPayablesOfPurchase(id as string),
+        ])
+        void reload('purchases', 'payables', 'ingredients')
+        return { purchase, payables }
+      }),
+    [run, reload],
+  )
 
-  const saveProduct = useCallback((product: Product) => {
-    setState((prev) => {
-      const exists = prev.products.some((p) => p.id === product.id)
-      return {
-        ...prev,
-        products: exists
-          ? prev.products.map((p) => (p.id === product.id ? product : p))
-          : [...prev.products, product],
-      }
-    })
-  }, [])
-
-  const removeProduct = useCallback((id: string) => {
-    setState((prev) => ({ ...prev, products: prev.products.filter((p) => p.id !== id) }))
-  }, [])
-
-  const saveIngredient = useCallback((ingredient: Ingredient) => {
-    setState((prev) => {
-      const exists = prev.ingredients.some((i) => i.id === ingredient.id)
-      return {
-        ...prev,
-        ingredients: exists
-          ? prev.ingredients.map((i) => (i.id === ingredient.id ? ingredient : i))
-          : [...prev.ingredients, ingredient],
-      }
-    })
-  }, [])
-
-  const removeIngredient = useCallback((id: string) => {
-    setState((prev) => ({
-      ...prev,
-      ingredients: prev.ingredients.filter((i) => i.id !== id),
-      products: prev.products.map((p) => ({
-        ...p,
-        recipe: p.recipe.filter((r) => r.ingredientId !== id),
-      })),
-    }))
-  }, [])
-
-  const adjustStock = useCallback((id: string, newStock: number) => {
-    setState((prev) => ({
-      ...prev,
-      ingredients: prev.ingredients.map((i) =>
-        i.id === id ? { ...i, stock: round3(Math.max(0, newStock)) } : i,
+  const addExpense = useCallback(
+    (draft: Expense) =>
+      act(
+        async () =>
+          check(
+            await supabase.rpc('add_expense', {
+              draft: { ...draft, amount: round2(draft.amount), supplier: draft.supplier ?? null },
+            }),
+          ),
+        'payables',
       ),
-    }))
-  }, [])
+    [act],
+  )
 
-  const saveUser = useCallback((user: User) => {
-    setState((prev) => {
-      const exists = prev.users.some((u) => u.id === user.id)
-      return {
-        ...prev,
-        users: exists ? prev.users.map((u) => (u.id === user.id ? user : u)) : [...prev.users, user],
-      }
-    })
-  }, [])
+  const payPayable = useCallback(
+    (id: string, date?: string) =>
+      act(
+        async () =>
+          check(
+            await supabase
+              .from('payables')
+              .update({ status: 'pago', paid_at: date ?? new Date().toISOString().slice(0, 10) })
+              .eq('id', id),
+          ),
+        'payables',
+      ),
+    [act],
+  )
 
-  const removeUser = useCallback((id: string) => {
-    setState((prev) => ({ ...prev, users: prev.users.filter((u) => u.id !== id) }))
-  }, [])
+  const reopenPayable = useCallback(
+    (id: string) =>
+      act(
+        async () =>
+          check(await supabase.from('payables').update({ status: 'aberto', paid_at: null }).eq('id', id)),
+        'payables',
+      ),
+    [act],
+  )
 
-  const resetDemo = useCallback(() => {
-    setState(seedState())
-  }, [])
+  const removePayable = useCallback(
+    (id: string) =>
+      act(async () => check(await supabase.from('payables').delete().eq('id', id)), 'payables'),
+    [act],
+  )
+
+  const saveProduct = useCallback(
+    (product: Product) =>
+      act(
+        async () =>
+          check(
+            await supabase.rpc('save_product', {
+              p: { ...product, image: product.image ?? null },
+            }),
+          ),
+        'products',
+      ),
+    [act],
+  )
+
+  const removeProduct = useCallback(
+    (id: string) =>
+      act(async () => check(await supabase.from('products').delete().eq('id', id)), 'products'),
+    [act],
+  )
+
+  const saveIngredient = useCallback(
+    (ingredient: Ingredient) =>
+      act(async () => {
+        const current = ref.current.ingredients.find((i) => i.id === ingredient.id)
+        const row = {
+          id: ingredient.id,
+          name: ingredient.name,
+          unit: ingredient.unit,
+          min_stock: ingredient.minStock,
+          avg_cost: ingredient.avgCost,
+          stock: round3(Math.max(0, ingredient.stock)),
+        }
+        if (!current) {
+          check(await supabase.from('ingredients').insert(row))
+          return
+        }
+        // Só regrava o saldo se ele foi mesmo editado: assim uma venda feita
+        // enquanto o formulário estava aberto não é desfeita.
+        const { stock, ...rest } = row
+        const patch = stock === current.stock ? rest : row
+        check(await supabase.from('ingredients').update(patch).eq('id', ingredient.id))
+      }, 'ingredients'),
+    [act],
+  )
+
+  const removeIngredient = useCallback(
+    (id: string) =>
+      act(
+        async () => check(await supabase.from('ingredients').delete().eq('id', id)),
+        'ingredients',
+        'products',
+      ),
+    [act],
+  )
+
+  const adjustStock = useCallback(
+    (id: string, newStock: number) =>
+      act(
+        async () =>
+          check(
+            await supabase
+              .from('ingredients')
+              .update({ stock: round3(Math.max(0, newStock)) })
+              .eq('id', id),
+          ),
+        'ingredients',
+      ),
+    [act],
+  )
+
+  const saveUser = useCallback(
+    (draft: UserDraft) =>
+      act(async () => {
+        const { data, error } = await supabase.functions.invoke('manage-users', {
+          body: { action: draft.id ? 'update' : 'create', ...draft },
+        })
+        if (error) throw new Error(await functionError(error))
+        if (data?.error) throw new Error(data.error)
+      }, 'users'),
+    [act],
+  )
+
+  const removeUser = useCallback(
+    (id: string) =>
+      act(async () => {
+        const { data, error } = await supabase.functions.invoke('manage-users', {
+          body: { action: 'delete', id },
+        })
+        if (error) throw new Error(await functionError(error))
+        if (data?.error) throw new Error(data.error)
+      }, 'users'),
+    [act],
+  )
 
   const value = useMemo<StoreValue>(
     () => ({
       ...state,
+      ready,
+      error,
+      dismissError: () => setError(null),
       placeOrder,
       setOrderStatus,
       cancelOrder,
@@ -487,10 +547,11 @@ export function LanchoneteStoreProvider({ children }: { children: ReactNode }) {
       adjustStock,
       saveUser,
       removeUser,
-      resetDemo,
     }),
     [
       state,
+      ready,
+      error,
       placeOrder,
       setOrderStatus,
       cancelOrder,
@@ -506,11 +567,24 @@ export function LanchoneteStoreProvider({ children }: { children: ReactNode }) {
       adjustStock,
       saveUser,
       removeUser,
-      resetDemo,
     ],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
+}
+
+/** Extrai a mensagem que a Edge Function devolveu junto com o status de erro. */
+async function functionError(error: unknown): Promise<string> {
+  const ctx = (error as { context?: Response }).context
+  if (ctx && typeof ctx.json === 'function') {
+    try {
+      const body = await ctx.json()
+      if (body?.error) return String(body.error)
+    } catch {
+      // corpo não é JSON — cai na mensagem genérica
+    }
+  }
+  return errorMessage(error)
 }
 
 export function useStore(): StoreValue {
