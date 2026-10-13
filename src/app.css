@@ -1351,7 +1351,7 @@
 
 .lm-recipe li {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 110px 40px 90px auto;
+  grid-template-columns: minmax(0, 1fr) 100px 72px 100px auto;
   gap: 0.4rem;
   align-items: center;
 }
@@ -1363,9 +1363,17 @@
 }
 
 .lm-recipe__cost {
+  display: grid;
   font-size: 0.82rem;
   font-weight: 700;
   text-align: right;
+}
+
+.lm-recipe__base {
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 600;
+  color: var(--lm-muted);
 }
 
 /* --------------------------------------------------------------- Modal --- */
